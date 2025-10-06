@@ -1,0 +1,9 @@
+{
+  "name": "netlify-functions",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "resend": "^3.4.0",
+    "@supabase/supabase-js": "^2.44.4"
+  }
+}

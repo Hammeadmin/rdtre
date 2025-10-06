@@ -1,0 +1,258 @@
+/* hammeadmin/new-projekt/new-projekt-d3c09ad53be8372598100322f6da2929998ff3b9/src/index.css */
+
+
+/* --- Base Styles --- */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --color-brand-beige: #f7f2e5;
+  }
+
+  body {
+    @apply font-sans min-h-screen dark:bg-secondary-900;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+  @apply font-semibold text-primary-700 dark:text-primary-300;
+}
+
+  input[type="date"],
+  input[type="time"] {
+    @apply appearance-none;
+  }
+
+  input[type="date"]::-webkit-calendar-picker-indicator,
+  input[type="time"]::-webkit-calendar-picker-indicator {
+    @apply bg-transparent cursor-pointer hover:opacity-75 transition-opacity p-2;
+  }
+}
+
+/* --- Responsive Breakpoints --- */
+.responsive-container {
+  @apply w-full px-4 sm:px-6 md:px-8;
+}
+
+.responsive-grid {
+  @apply grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-6;
+}
+
+.responsive-flex {
+  @apply flex flex-col sm:flex-row gap-4;
+}
+
+@layer components {
+  /* Buttons */
+  .btn { @apply inline-flex items-center justify-center px-4 py-2 border text-sm font-medium rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-200 font-semibold; }
+  .btn:not(:disabled):hover { @apply -translate-y-px shadow-md; }
+  .btn-primary { @apply border-transparent text-white bg-primary-600 hover:bg-primary-700 focus:ring-primary-500 dark:bg-primary-500 dark:hover:bg-primary-600; }
+  .btn-secondary { @apply border-gray-300 text-secondary-800 bg-white hover:bg-secondary-50 focus:ring-secondary-500 dark:bg-secondary-800 dark:text-secondary-100 dark:border-secondary-600 dark:hover:bg-secondary-700; }
+  .btn-danger { @apply border-red-300 text-red-700 bg-red-50 hover:bg-red-100 focus:ring-red-500 dark:bg-red-900/20 dark:text-red-300 dark:border-red-700/50 dark:hover:bg-red-900/40; }
+  .btn-success { @apply border-transparent text-white bg-accent-600 hover:bg-accent-700 focus:ring-accent-500; }
+  .btn-warm { @apply border-transparent text-white bg-warm-500 hover:bg-warm-600 focus:ring-warm-400; }
+  
+  /* REMOVED .btn-indigo as 'secondary' can take its place or use a more generic name */
+
+  .btn-xs { @apply px-2.5 py-1.5 text-xs; }
+  .btn-sm { @apply px-3 py-1.5 text-sm; }
+  .btn-outline { @apply bg-transparent border-gray-300 text-gray-700 hover:bg-gray-50; }
+  .btn-primary-outline { @apply bg-transparent border-primary-500 text-primary-600 hover:bg-primary-50; }
+  .btn-success-outline { @apply bg-transparent border-accent-500 text-accent-600 hover:bg-accent-50; }
+
+  .status-badge { @apply inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium align-middle border; }
+  .status-open { @apply bg-primary-100 text-primary-800 border-primary-200 dark:bg-primary-900/50 dark:text-primary-200 dark:border-primary-700; } 
+  .status-filled { @apply bg-green-100 text-green-800 border-green-200 dark:bg-green-900/50 dark:text-green-200 dark:border-green-700; }
+  .status-cancelled { @apply bg-red-100 text-red-800 border-red-200 dark:bg-red-900/50 dark:text-red-200 dark:border-red-700; }
+  .status-completed { @apply bg-secondary-100 text-secondary-800 border-secondary-200 dark:bg-secondary-900/50 dark:text-secondary-200 dark:border-secondary-700; }
+  .status-pending { @apply bg-yellow-100 text-yellow-800 border-yellow-300 dark:bg-yellow-900/50 dark:text-yellow-200 dark:border-yellow-700; }
+
+  .status-accepted { @apply bg-green-100 text-green-800 border-green-300; }
+  .status-rejected { @apply bg-red-100 text-red-800 border-red-300; }
+  .status-unknown { @apply bg-gray-100 text-gray-800 border-gray-300; }
+  .status-withdrawn { @apply bg-gray-100 text-gray-500 border-gray-200; }
+
+  .input-field { @apply w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 outline-none shadow-sm; }
+  .card { @apply bg-white rounded-lg shadow-card p-6 hover:shadow-card-hover transition-shadow duration-200 border border-gray-100 dark:bg-secondary-900 dark:border-secondary-700; }
+  .gradient-text { @apply bg-gradient-to-r from-primary-600 to-accent-600 bg-clip-text text-transparent; }
+ .label-style { @apply block text-sm font-medium text-gray-700 mb-1 dark:text-gray-300; }
+  .form-input, .form-select { @apply block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-primary-500 focus:border-primary-500 sm:text-sm disabled:bg-gray-100 dark:bg-secondary-800 dark:border-secondary-600 dark:text-gray-200 dark:placeholder-gray-400; }
+  .date-input { @apply form-input appearance-none; }
+  .time-input { @apply form-input appearance-none; }
+  .datetime-picker { @apply relative; }
+  .datetime-picker-icon { @apply absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none; }
+
+  .profile-sidebar { @apply fixed top-0 left-0 h-full w-24 bg-primary-700 flex flex-col items-center py-8 space-y-6; } /* Uses primary */
+  
+  .profile-container {
+  @apply min-h-screen bg-brandBeige dark:bg-secondary-900;
+}
+
+  
+  .modal-backdrop { @apply fixed inset-0 bg-black bg-opacity-60 items-center justify-center p-4 z-50 backdrop-blur-sm transition-opacity duration-200; }
+  .modal-content { @apply bg-white rounded-lg shadow-modal w-full max-h-[90vh] overflow-y-auto flex flex-col relative; }
+  
+  .dashboard-container {
+  @apply min-h-screen bg-brandBeige dark:bg-secondary-900 flex overflow-hidden;
+}
+  
+  /* Sidebar uses gray-800, consider primary-800 or similar for green theme */
+  .dashboard-sidebar {
+    @apply w-64 min-h-screen bg-primary-800 text-primary-100 p-4 flex flex-col flex-shrink-0 fixed left-0 top-0 h-full z-10; /* UPDATED for green theme */
+  }
+  .dashboard-content { @apply flex-1 p-6 overflow-x-hidden ml-64; }
+  .dashboard-card { @apply bg-white rounded-lg shadow-card p-5 border border-gray-100 hover:shadow-card-hover transition-shadow duration-200 dark:bg-secondary-900 dark:border-secondary-700; }
+  .dashboard-stat-card { @apply bg-white overflow-hidden shadow-card rounded-lg hover:shadow-card-hover transition-shadow duration-200 dark:bg-secondary-900 dark:border-secondary-700; }
+
+  .dashboard-section { @apply mb-8; }
+  .dashboard-section-title { @apply text-xl font-semibold text-primary-700 mb-4 dark:text-primary-300; }
+  
+  .responsive-table-container { @apply w-full overflow-x-auto -mx-4 sm:mx-0 px-4 sm:px-0; }
+  .responsive-card { @apply p-4 sm:p-6 bg-white rounded-lg shadow border border-gray-200 transition-all; }
+  .mobile-menu { @apply fixed inset-0 z-50 bg-gray-900 bg-opacity-75 flex flex-col; }
+  .mobile-menu-content { @apply bg-white w-full max-w-sm h-full overflow-y-auto flex flex-col; }
+  .form-group-responsive { @apply mb-4 sm:mb-6; }
+  .input-responsive { @apply w-full px-3 py-2 sm:py-2.5 text-sm sm:text-base; }
+  .btn-responsive { @apply px-3 py-1.5 sm:px-4 sm:py-2 text-sm sm:text-base; }
+  .table-container { @apply overflow-x-auto shadow-sm rounded-lg border border-gray-200; }
+  .table-header { @apply bg-gray-50 text-left text-xs font-medium text-gray-500 uppercase tracking-wider dark:bg-secondary-800 dark:text-gray-400; }
+ .table-cell { @apply px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-300; }
+.table-row-hover { @apply hover:bg-gray-50 transition-colors duration-150 dark:hover:bg-secondary-800; }
+
+  .tab-button.active { @apply bg-primary-600 text-white; }
+ .tab-button:not(.active) { @apply bg-gray-200 text-gray-700 hover:bg-gray-300 dark:bg-secondary-700 dark:text-gray-300 dark:hover:bg-secondary-600; }
+  .btn-icon { @apply p-2 rounded-md; }
+  .btn-active { @apply bg-primary-600 text-white; }
+  .form-input, .form-select {
+    @apply block w-full rounded-md border-gray-300 shadow-sm focus:border-primary-500 focus:ring-primary-500 sm:text-sm;
+  }
+}
+
+@keyframes pulse-badge {
+  0%, 100% {
+    transform: scale(1);
+    box-shadow: 0 0 0 0 rgba(4, 120, 87, 0.4);
+  }
+  50% {
+    transform: scale(1.05);
+    box-shadow: 0 0 0 6px rgba(4, 120, 87, 0);
+  }
+}
+
+.animate-pulse-badge {
+  animation: pulse-badge 2s infinite;
+}
+
+/* FullCalendar styles - Keep as is for now unless specific theme changes are needed */
+.fc-event-main-custom { padding: 2px 4px; font-size: 0.75rem; line-height: 1.3; overflow: hidden; cursor: pointer; }
+.fc-event-main-custom .font-semibold { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: block; }
+.fc-event-main-custom .text-\[0\.7rem\] { font-size: 0.7rem; line-height: 1.1rem; }
+.fc-event-main-custom .text-\[0\.7rem\] svg { display: inline-block; width: 10px; height: 10px; margin-right: 2px; vertical-align: middle; }
+.fc-daygrid-event { white-space: normal !important; }
+.fc .fc-button { text-transform: capitalize; }
+.fc .fc-toolbar-title { font-size: 1.2em; font-weight: 600; }
+
+/* Event status colors - REVIEW AND UPDATE THESE to use your new theme colors if desired */
+/* For example, .event-status-open could use primary or accent shades */
+.event-status-open { @apply border-l-primary-500 bg-primary-50 text-primary-700; } /* Example Update */
+.event-status-filled { @apply border-l-accent-500 bg-accent-50 text-accent-700; } /* Example Update */
+.event-status-completed { @apply border-l-secondary-500 bg-secondary-50 text-secondary-700; } /* Uses new secondary */
+.event-status-cancelled { @apply border-l-red-500 bg-red-50 text-red-700; } /* Red is often fine for cancelled */
+.event-app-status-pending { @apply border-l-yellow-500 bg-yellow-50 text-yellow-700; } /* Yellow for pending */
+.event-app-status-accepted { @apply border-l-green-500 bg-green-50 text-green-700; } /* General green, could be accent */
+.event-app-status-rejected { @apply border-l-red-500 bg-red-50 text-red-700; }
+.event-app-status-withdrawn { @apply border-l-gray-400 bg-gray-100 text-gray-600; }
+
+@media print {
+  .print\:hidden { display: none !important; }
+  .print\:block { display: block !important; }
+  .print\:w-full { width: 100% !important; }
+  .fc-toolbar { display: none !important; }
+  .fc { font-size: 10pt; }
+  .fc-event-main-custom { font-size: 8pt; }
+  .fc-event { box-shadow: none !important; border: 1px solid #ccc !important; }
+}
+
+@media (max-width: 640px) {
+  .mobile-only { display: block; }
+  .desktop-only { display: none; }
+  h1 { @apply text-2xl; }
+  h2 { @apply text-xl; }
+  .table-responsive { display: block; width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+}
+
+@media (min-width: 641px) {
+  .mobile-only { display: none; }
+  .desktop-only { display: block; }
+}
+
+.tab-button {
+  @apply px-4 py-2 text-sm font-medium rounded-md transition-colors;
+}
+
+.tab-button.active { @apply bg-primary-600 text-white; }
+.tab-button:not(.active) { @apply bg-gray-200 text-gray-700 hover:bg-gray-300 dark:bg-secondary-700 dark:text-gray-300 dark:hover:bg-secondary-600; }
+.btn-icon { @apply p-2 rounded-md; }
+.btn-active { @apply bg-primary-600 text-white; }
+.form-input, .form-select {
+  @apply block w-full rounded-md border-gray-300 shadow-sm focus:border-primary-500 focus:ring-primary-500 sm:text-sm;
+}
+
+
+/* Add this to the bottom of your src/index.css file */
+
+/* --- Keyframe Animations --- */
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes slideInUp {
+  from { opacity: 0; transform: translateY(20px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* --- Base Modal Styles --- */
+/* These classes will be used by our new reusable Modal component */
+.modal-backdrop {
+    @apply fixed inset-0 bg-black bg-opacity-60 backdrop-blur-sm z-[1000] flex items-center justify-center;
+    animation: fadeIn 0.3s ease-out;
+}
+
+.modal-content-wrapper { @apply bg-white rounded-lg shadow-xl max-h-[90vh] w-full flex flex-col dark:bg-secondary-800 dark:text-gray-200; animation: slideInUp 0.4s ease-out; }
+
+/* --- Enhanced Button Styles (Optional but Recommended) --- */
+/* Add this to your existing .btn class if you have one, or use it as a base */
+.btn {
+  @apply transition-all duration-150 ease-in-out;
+}
+/* This creates a subtle "lift" effect on hover */
+.btn:not(:disabled):hover {
+    @apply -translate-y-px shadow-md;
+}
+.btn:not(:disabled):active {
+    @apply translate-y-0 shadow-sm;
+}
+
+/* Add this to the bottom of your src/index.css file */
+
+/* --- Keyframe Animations --- */
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes slideInUp {
+  from { opacity: 0; transform: translateY(20px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* --- Reusable "Alive" Card Style --- */
+/* We will apply this class directly to the ShiftCard component */
+.card-interactive {
+  @apply bg-white border border-gray-200 rounded-lg shadow-md transition-all duration-200;
+}
+.card-interactive:hover {
+  @apply shadow-xl -translate-y-1 border-blue-500 cursor-pointer;
+}
