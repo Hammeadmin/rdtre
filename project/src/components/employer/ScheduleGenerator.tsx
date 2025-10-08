@@ -6,7 +6,7 @@ import { toast } from 'react-hot-toast';
 import {
     Calendar as CalendarIconLucide, Users, Clock, Save, AlertTriangle, Loader2, Plus, Trash2,
     UserPlus, Settings, Edit, Download, List, X, Calendar as FullCalendarIcon, UploadCloud,
-    ChevronDown, UserCheck, UserX, Info, Repeat, CheckSquare, Square, Printer, Megaphone, ChevronLeft, ChevronRight, Image as ImageIcon
+    ChevronDown, UserCheck, UserX, Info, Repeat, CheckSquare, Square, Printer, Megaphone, ChevronLeft, ChevronRight, Image as ImageIcon, BarChart2
 } from 'lucide-react';
 import type { UserProfile, UserRole, ShiftNeed } from '../../types';
 import type { Database } from '../../types/database';
@@ -23,7 +23,6 @@ import { InfoTooltip } from '../UI/InfoTooltip';
 
 // Date-fns Imports
 import { format, parseISO, isValid } from 'date-fns';
-import { startOfWeek, endOfWeek, addDays, startOfMonth, endOfMonth, eachDayOfInterval, isSameDay } from 'date-fns';
 import { sv } from 'date-fns/locale';
 
 // Modal Imports
@@ -46,27 +45,38 @@ const getColor = (str: string) => {
 };
 
 // --- Interfaces ---
-interface ScheduleRequirement { id: string; daysOfWeek: number[]; startTime: string; endTime: string; requiredRole: UserRole | ''; requiredCount: number; includeLunch: boolean; }
-type ManualStaffMember = Database['public']['Tables']['employer_manual_staff']['Row'];
-
-// NEW: Represents an employee fetched from your database via the relationship table
-interface EmployedStaffProfile {
-  id: string; // This is the profile_id
-  name: string;
-  role: UserRole;
-  // Add other relevant fields from your 'profiles' table here
+interface ScheduleRequirement {
+    id: string;
+    daysOfWeek: number[];
+    startTime: string;
+    endTime: string;
+    requiredRole: UserRole | '';
+    requiredCount: number;
+    includeLunch: boolean;
 }
 
-// NEW: This will be the unified structure for ALL staff in the schedule (manual or employed)
+type ManualStaffMember = Database['public']['Tables']['employer_manual_staff']['Row'] & { unavailable_dates?: string[] };
+
+// Represents an employee fetched from your database via the relationship table
+interface EmployedStaffProfile {
+    id: string; // This is the profile_id
+    name: string;
+    role: UserRole;
+    // You might extend this to fetch unavailability from a dedicated table in the future
+}
+
+// UPDATED: This will be the unified structure for ALL staff in the schedule (manual or employed)
 interface ScheduleStaffMember {
     id: string; // Can be profile_id or manual_staff_id
     name: string;
     role: UserRole;
     minstaAntalTimmar: number;
-    anstallningstyp: 'Heltid' | 'Deltid' | 'Timmar'; // Or other types you use
+    anstallningstyp: 'Heltid' | 'Deltid' | 'Timanställd'; // UPDATED to match edge function
     maxConsecutiveDays: number | null;
+    unavailableDates: string[]; // NEW: Added for unavailability tracking
     isManual: boolean; // Flag to distinguish between staff types
 }
+
 
 interface GeneratedShift {
     id: string;
@@ -92,19 +102,37 @@ interface GeneratedShift {
     published_shift_need_id?: string | null;
 }
 
-interface PharmacyHours { dayOfWeek: number; openTime: string | null; closeTime: string | null; }
+interface PharmacyHours {
+    dayOfWeek: number;
+    openTime: string | null;
+    closeTime: string | null;
+}
+
 type ScheduleRecord = Database['public']['Tables']['schedules']['Row'];
 type ScheduleShiftRecord = Database['public']['Tables']['schedule_shifts']['Row'];
-type ScheduleShiftRecordUpsert = Omit<Database['public']['Tables']['schedule_shifts']['Row'], 'id' | 'created_at' | 'updated_at'> & { id?: string };
+
+// NEW: Interface for the statistics returned from the edge function
+interface ScheduleStatistics {
+    totalShifts: number;
+    unfilledShifts: number;
+    employeeUtilization: {
+        [employeeName: string]: {
+            assignedHours: number;
+            targetHours: number;
+            shiftsCount: number;
+        };
+    };
+}
 
 
 const DAYS_OF_WEEK_NAMES_SV = ['Söndag', 'Måndag', 'Tisdag', 'Onsdag', 'Torsdag', 'Fredag', 'Lördag'];
 const ALL_ROLES: UserRole[] = ['pharmacist', 'säljare', 'egenvårdsrådgivare'];
 const ROLE_DISPLAY_MAP: Record<UserRole, string> = {
-  pharmacist: 'Farmaceut',
-  säljare: 'Säljare',
-  egenvårdsrådgivare: 'Egenvårdsrådgivare'
+    pharmacist: 'Farmaceut',
+    säljare: 'Säljare',
+    egenvårdsrådgivare: 'Egenvårdsrådgivare'
 };
+
 function formatTime(timeString: string | null | undefined): string {
     if (!timeString) return 'N/A';
     const parts = timeString.split(':');
@@ -121,24 +149,37 @@ export function ScheduleGenerator() {
     const [newStaffName, setNewStaffName] = useState('');
     const [newStaffRole, setNewStaffRole] = useState<UserRole | ''>('');
     const [scheduleRequirements, setScheduleRequirements] = useState<ScheduleRequirement[]>([]);
-    // --- NEW STATE for combined staff management ---
-    
+
     // Holds employees fetched from your DB (employer_employee_relationship)
     const [employedStaffList, setEmployedStaffList] = useState<EmployedStaffProfile[]>([]);
-    
-    
+
+    // This is the combined list used for the schedule generation logic
+    const [scheduleStaffList, setScheduleStaffList] = useState<ScheduleStaffMember[]>([]);
+
     // Manages the modal for adding employed staff
     const [isStaffModalOpen, setIsStaffModalOpen] = useState(false);
-  const [includedEmployeeIds, setIncludedEmployeeIds] = useState<Set<string>>(new Set()); // <-- ADD THIS LINE
+    const [includedEmployeeIds, setIncludedEmployeeIds] = useState<Set<string>>(new Set());
+
     const [startDate, setStartDate] = useState('');
     const [endDate, setEndDate] = useState('');
-    const [pharmacyHours, setPharmacyHours] = useState<PharmacyHours[]>(DAYS_OF_WEEK_NAMES_SV.map((_, i) => ({ dayOfWeek: i, openTime: '09:00', closeTime: '18:00' })));
+    const [pharmacyHours, setPharmacyHours] = useState<PharmacyHours[]>(
+        DAYS_OF_WEEK_NAMES_SV.map((_, i) => ({
+            dayOfWeek: i,
+            openTime: '09:00',
+            closeTime: '18:00'
+        }))
+    );
     const [defaultLunchMinutes, setDefaultLunchMinutes] = useState<number>(30);
-  const [postShiftHourlyRate, setPostShiftHourlyRate] = useState<number | null>(null);
-  const [postShiftLunch, setPostShiftLunch] = useState<string>('30 min'); // Default to 30 min
+    const [postShiftHourlyRate, setPostShiftHourlyRate] = useState<number | null>(null);
+    const [postShiftLunch, setPostShiftLunch] = useState<string>('30 min');
     const [minStaffingRules, setMinStaffingRules] = useState<{ id: string; role: UserRole | ''; count: number }[]>([]);
     const [generatedSchedule, setGeneratedSchedule] = useState<GeneratedShift[] | null>(null);
     const [displaySchedule, setDisplaySchedule] = useState<GeneratedShift[] | null>(null);
+
+    // NEW: State for schedule statistics
+    const [scheduleStats, setScheduleStats] = useState<ScheduleStatistics | null>(null);
+    const [showStatsModal, setShowStatsModal] = useState(false);
+
     const [loadingGeneration, setLoadingGeneration] = useState(false);
     const [savingSchedule, setSavingSchedule] = useState(false);
     const [publishingShifts, setPublishingShifts] = useState(false);
@@ -161,10 +202,10 @@ export function ScheduleGenerator() {
     const [postShiftDescription, setPostShiftDescription] = useState('');
     const [shiftToEdit, setShiftToEdit] = useState<GeneratedShift | null>(null);
     const [showShiftDetailsModal, setShowShiftDetailsModal] = useState(false);
-  const scheduleViewRef = useRef<HTMLDivElement>(null);
-const listViewRef = useRef<HTMLDivElement>(null);
-
-
+    const scheduleViewRef = useRef<HTMLDivElement>(null);
+    const listViewRef = useRef<HTMLDivElement>(null);
+    const [defaultHourlyRate, setDefaultHourlyRate] = useState<number>(200);
+  const [tempDates, setTempDates] = useState<{ [staffId: string]: string }>({});
 
     const fetchManualStaff = useCallback(async () => {
         if (!profile?.id) return;
@@ -178,7 +219,6 @@ const listViewRef = useRef<HTMLDivElement>(null);
                 .order('staff_name', { ascending: true });
             if (fetchError) throw fetchError;
             setManualStaffList(data || []);
-            
         } catch (err) {
             const message = err instanceof Error ? err.message : "Failed to load staff list.";
             console.error("Error fetching staff:", err);
@@ -190,39 +230,33 @@ const listViewRef = useRef<HTMLDivElement>(null);
         }
     }, [profile]);
 
-    useEffect(() => {
-        fetchManualStaff();
-    }, [fetchManualStaff]);
-  const fetchEmployedStaff = useCallback(async () => {
+    const fetchEmployedStaff = useCallback(async () => {
         if (!profile?.id) return;
 
         try {
-            // This query joins through the relationship table to get profile details
             const { data, error: fetchError } = await supabase
-    .from('employer_employee_relationships')
-    // This is the corrected line:
-    .select(`
-        profiles!employer_employee_relationships_employee_id_fkey (
-            id,
-            full_name,
-            role
-        )
-    `)
-    .eq('employer_id', profile.id);
+                .from('employer_employee_relationships')
+                .select(`
+                    profiles!employer_employee_relationships_employee_id_fkey (
+                        id,
+                        full_name,
+                        role
+                    )
+                `)
+                .eq('employer_id', profile.id);
 
             if (fetchError) throw fetchError;
 
-            // The data is nested, so we flatten it to our EmployedStaffProfile interface
             const profiles = data?.map(item => {
-    if (!item.profiles) return null;
-    return {
-        id: item.profiles.id,
-        name: item.profiles.full_name, // <-- Map full_name to name
-        role: item.profiles.role,
-    };
-}).filter(p => p) || [];
+                if (!item.profiles) return null;
+                return {
+                    id: item.profiles.id,
+                    name: item.profiles.full_name,
+                    role: item.profiles.role,
+                };
+            }).filter(p => p) || [];
 
-setEmployedStaffList(profiles as EmployedStaffProfile[]);
+            setEmployedStaffList(profiles as EmployedStaffProfile[]);
 
         } catch (err) {
             console.error("Error fetching employed staff:", err);
@@ -230,54 +264,58 @@ setEmployedStaffList(profiles as EmployedStaffProfile[]);
         }
     }, [profile]);
 
-    // Call this new fetch function in a useEffect
     useEffect(() => {
         if (profile?.id) {
             fetchManualStaff();
-            fetchEmployedStaff(); // Fetch both lists on load
+            fetchEmployedStaff();
         }
     }, [profile, fetchManualStaff, fetchEmployedStaff]);
 
-useEffect(() => {
-    // Check if the source lists have loaded but our inclusion set is still empty.
-    if ((employedStaffList.length > 0 || manualStaffList.length > 0) && includedEmployeeIds.size === 0) {
-        const allIds = [
-            ...employedStaffList.map(e => e.id),
-            ...manualStaffList.map(m => m.id)
-        ];
-        setIncludedEmployeeIds(new Set(allIds));
-    }
-    // We intentionally leave the dependency array sparse. This should only run on initial load.
-}, [employedStaffList, manualStaffList]);
+    // This effect now populates the main `scheduleStaffList` from the source lists.
+    // It runs whenever the source lists or the set of included IDs changes.
+    useEffect(() => {
+        const includedManualStaff = manualStaffList
+            .filter(man => includedEmployeeIds.has(man.id))
+            .map(manual => ({
+                id: manual.id,
+                name: manual.staff_name,
+                role: manual.staff_role as UserRole,
+                minstaAntalTimmar: manual.target_hours || 40,
+                anstallningstyp: 'Timanställd' as 'Timanställd',
+                maxConsecutiveDays: manual.max_consecutive_days || 5,
+                unavailableDates: manual.unavailable_dates || [],
+                isManual: true,
+            }));
 
-  const scheduleStaffList = useMemo(() => {
-    const includedManualStaff = manualStaffList
-        .filter(man => includedEmployeeIds.has(man.id))
-        .map(manual => ({
-            id: manual.id,
-            name: manual.staff_name,
-            role: manual.staff_role as UserRole,
-            minstaAntalTimmar: manual.target_hours || 40,
-            anstallningstyp: 'Heltid' as 'Heltid',
-            maxConsecutiveDays: manual.max_consecutive_days || 5,
-            isManual: true,
-        }));
+        const includedEmployedStaff = employedStaffList
+            .filter(emp => includedEmployeeIds.has(emp.id))
+            .map(employed => ({
+                id: employed.id,
+                name: employed.name,
+                role: employed.role,
+                minstaAntalTimmar: 40, // Default, can be customized
+                anstallningstyp: 'Heltid' as 'Heltid',
+                maxConsecutiveDays: 5, // Default, can be customized
+                unavailableDates: [], // Placeholder
+                isManual: false,
+            }));
 
-    const includedEmployedStaff = employedStaffList
-        .filter(emp => includedEmployeeIds.has(emp.id))
-        .map(employed => ({
-            id: employed.id,
-            name: employed.name,
-            role: employed.role,
-            minstaAntalTimmar: 40,
-            anstallningstyp: 'Heltid' as 'Heltid',
-            maxConsecutiveDays: 5,
-            isManual: false,
-        }));
+        setScheduleStaffList([...includedEmployedStaff, ...includedManualStaff]);
+    }, [manualStaffList, employedStaffList, includedEmployeeIds]);
 
-    return [...includedEmployedStaff, ...includedManualStaff];
 
-}, [manualStaffList, employedStaffList, includedEmployeeIds]);
+    // This effect initializes the `includedEmployeeIds` set once on load.
+    useEffect(() => {
+        if ((employedStaffList.length > 0 || manualStaffList.length > 0) && includedEmployeeIds.size === 0) {
+            const allIds = [
+                ...employedStaffList.map(e => e.id),
+                ...manualStaffList.map(m => m.id)
+            ];
+            setIncludedEmployeeIds(new Set(allIds));
+        }
+        // This should only run once after the initial data fetch.
+    }, [employedStaffList, manualStaffList]);
+
 
     const handleAddStaffMember = useCallback(async (e: React.FormEvent) => {
         e.preventDefault();
@@ -300,16 +338,13 @@ useEffect(() => {
                 .select()
                 .single();
             if (error) throw error;
-           if (data) {
-    // Add the new staff member to the source list
-    setManualStaffList(prev => [...prev, data]);
-    // ALSO add their ID to the set of included employees
-    setIncludedEmployeeIds(prevIds => new Set([...prevIds, data.id]));
-
-    setNewStaffName('');
-    setNewStaffRole('');
-    toast.success("Staff member added.", { id: tid });
-} else {
+            if (data) {
+                setManualStaffList(prev => [...prev, data]);
+                setIncludedEmployeeIds(prevIds => new Set([...prevIds, data.id]));
+                setNewStaffName('');
+                setNewStaffRole('');
+                toast.success("Staff member added.", { id: tid });
+            } else {
                 throw new Error("Failed to add staff member (no data returned).");
             }
         } catch (err) {
@@ -318,27 +353,29 @@ useEffect(() => {
         }
     }, [newStaffName, newStaffRole, profile?.id]);
 
-        const handleRemoveStaffMember = useCallback(async (idToRemove: string, isManual: boolean) => {
-        // Prevent deletion of non-manual staff from this UI for safety
+    const handleRemoveStaffMember = useCallback(async (idToRemove: string, isManual: boolean) => {
         if (!isManual) {
-            toast.error("Anställda kan endast tas bort från sidan 'Mina Anställda'.");
-            // Optionally, you can just remove them from the temporary schedule list
-            // setScheduleStaffList(prev => prev.filter(staff => staff.id !== idToRemove));
+            // If not manual, just remove from the current schedule's included list
+            setIncludedEmployeeIds(prev => {
+                const newSet = new Set(prev);
+                newSet.delete(idToRemove);
+                return newSet;
+            });
+            toast.success("Anställd borttagen från detta schema.");
             return;
         }
 
         if (!window.confirm("Är du säker på att du vill ta bort denna temporära personal permanent?")) return;
-        
+
         const tid = toast.loading("Tar bort personal...");
         try {
             const { error } = await supabase.from('employer_manual_staff').delete().eq('id', idToRemove);
-            
+
             if (error) throw error;
 
-            // SUCCESS: Now update BOTH state lists to reflect the change
             setManualStaffList(prev => prev.filter(staff => staff.id !== idToRemove));
-            setScheduleStaffList(prev => prev.filter(staff => staff.id !== idToRemove));
-            
+            // No need to update includedEmployeeIds here, the useEffect will handle it.
+
             toast.success("Personal borttagen.", { id: tid });
         } catch (err) {
             console.error("Error removing staff:", err);
@@ -347,34 +384,86 @@ useEffect(() => {
         }
     }, []);
 
-    const handleStaffConstraintChange = useCallback(async (
+    const handleStaffConstraintChange = useCallback((
         staffId: string,
-        field: keyof Omit<ScheduleStaffMember, 'id' | 'name' | 'role' | 'isManual'>,
+        field: keyof Omit<ScheduleStaffMember, 'id' | 'name' | 'role' | 'isManual' | 'unavailableDates'>,
         value: any
     ) => {
         setScheduleStaffList(prev =>
-        prev.map(staff => {
-            if (staff.id === staffId) {
-                let processedValue = value;
-                if (field === 'minstaAntalTimmar' || field === 'maxConsecutiveDays') {
-                    processedValue = value === '' ? null : (parseInt(value, 10) || null);
+            prev.map(staff => {
+                if (staff.id === staffId) {
+                    let processedValue = value;
+                    if (field === 'minstaAntalTimmar' || field === 'maxConsecutiveDays') {
+                        processedValue = value === '' ? null : (parseInt(value, 10) || null);
+                    }
+                    return { ...staff, [field]: processedValue };
                 }
-                return { ...staff, [field]: processedValue };
+                return staff;
+            })
+        );
+    }, []);
+
+    // NOTE: For now, unavailability is only managed in local state.
+    // To persist it, you'd save it to the `employer_manual_staff` table for manual staff,
+    // or a new dedicated table for employed staff.
+    const handleAddUnavailableDate = useCallback((staffId: string, date: string) => {
+    if (!date) {
+        toast.error("Välj ett datum att lägga till.");
+        return;
+    }
+    
+    setScheduleStaffList(prevList => 
+        prevList.map(staff => {
+            if (staff.id === staffId) {
+                if (staff.unavailableDates.includes(date)) {
+                    toast.error("Detta datum är redan markerat som otillgängligt.");
+                    return staff; // Return unmodified staff member
+                }
+                const updatedDates = [...staff.unavailableDates, date].sort();
+                toast.success(`Lade till ${date} för ${staff.name}.`);
+                return { ...staff, unavailableDates: updatedDates };
             }
             return staff;
         })
     );
-    // You can add a debounced save to Supabase here if you store these settings per-schedule
+
+    // Clear the input for this specific staff member after adding
+    setTempDates(prev => ({ ...prev, [staffId]: '' }));
 }, []);
 
-    const handleAddRequirement = () => setScheduleRequirements(prev => [...prev, { id: crypto.randomUUID(), daysOfWeek: [], startTime: '09:00', endTime: '17:00', requiredRole: '', requiredCount: 1, includeLunch: true }]);
+const handleRemoveUnavailableDate = useCallback((staffId: string, dateToRemove: string) => {
+    setScheduleStaffList(prevList => 
+        prevList.map(staff => {
+            if (staff.id === staffId) {
+                const updatedDates = staff.unavailableDates.filter(d => d !== dateToRemove);
+                return { ...staff, unavailableDates: updatedDates };
+            }
+            return staff;
+        })
+    );
+    toast.success(`Tog bort datum för otillgänglighet.`);
+}, []);
+
+
+    const handleAddRequirement = () => setScheduleRequirements(prev => [...prev, {
+        id: crypto.randomUUID(),
+        daysOfWeek: [],
+        startTime: '09:00',
+        endTime: '17:00',
+        requiredRole: '',
+        requiredCount: 1,
+        includeLunch: true
+    }]);
+
     const handleRequirementChange = (id: string, field: keyof ScheduleRequirement | 'dayOfWeekToggle', value: any) => {
         setScheduleRequirements(prev => prev.map(req => {
             if (req.id === id) {
                 if (field === 'dayOfWeekToggle') {
                     const dayIndex = value as number;
                     const currentDays = req.daysOfWeek || [];
-                    const newDays = currentDays.includes(dayIndex) ? currentDays.filter(d => d !== dayIndex) : [...currentDays, dayIndex].sort((a, b) => a - b);
+                    const newDays = currentDays.includes(dayIndex)
+                        ? currentDays.filter(d => d !== dayIndex)
+                        : [...currentDays, dayIndex].sort((a, b) => a - b);
                     return { ...req, daysOfWeek: newDays };
                 } else if (field === 'requiredCount') {
                     return { ...req, [field]: Math.max(1, (parseInt(value, 10) || 1)) };
@@ -385,190 +474,271 @@ useEffect(() => {
             return req;
         }));
     };
+
     const handleRemoveRequirement = (id: string) => setScheduleRequirements(prev => prev.filter(req => req.id !== id));
+
     const handlePharmacyHourChange = (dayIndex: number, field: 'openTime' | 'closeTime', value: string | null) => {
-        setPharmacyHours(prev => prev.map((day, i) => i === dayIndex ? { ...day, [field]: value === '' ? null : value } : day));
+        setPharmacyHours(prev => prev.map((day, i) =>
+            i === dayIndex ? { ...day, [field]: value === '' ? null : value } : day
+        ));
     };
-  const [defaultHourlyRate, setDefaultHourlyRate] = useState<number>(200); // Or any default
-  
-    const handleAddMinStaffingRule = () => setMinStaffingRules(prev => [...prev, { id: crypto.randomUUID(), role: '', count: 1 }]);
+
+    const handleAddMinStaffingRule = () => setMinStaffingRules(prev => [...prev, {
+        id: crypto.randomUUID(),
+        role: '',
+        count: 1
+    }]);
+
     const handleMinStaffingChange = (id: string, field: 'role' | 'count', value: any) => {
         const updatedValue = field === 'count' ? Math.max(1, (parseInt(value, 10) || 1)) : value;
-        setMinStaffingRules(prev => prev.map(rule => rule.id === id ? { ...rule, [field]: updatedValue } : rule));
+        setMinStaffingRules(prev => prev.map(rule =>
+            rule.id === id ? { ...rule, [field]: updatedValue } : rule
+        ));
     };
+
     const handleRemoveMinStaffingRule = (id: string) => setMinStaffingRules(prev => prev.filter(rule => rule.id !== id));
 
     const handleGenerateSchedule = useCallback(async () => {
-        setError(null); setWarnings([]); setGeneratedSchedule(null); setDisplaySchedule(null);
-        setSavedScheduleId(null); setEditingShiftId(null);
+        setError(null);
+        setWarnings([]);
+        setGeneratedSchedule(null);
+        setDisplaySchedule(null);
+        setScheduleStats(null); // Clear previous stats
+        setSavedScheduleId(null);
+        setEditingShiftId(null);
 
-        if (!startDate || !endDate) { toast.error("Please select a start and end date."); return; }
-        const hasValidRequirements = scheduleRequirements.length > 0 && scheduleRequirements.some(req => req.daysOfWeek.length > 0 && req.requiredRole && req.requiredCount > 0);
-        const hasMinStaffing = minStaffingRules.length > 0 && minStaffingRules.some(rule => rule.role && rule.count > 0);
-        if (!hasValidRequirements && !hasMinStaffing) { toast.error("Please define staffing needs or minimum staffing rules."); return; }
-       if (scheduleStaffList.length === 0) {
-        toast.error("Please add staff to include in the schedule.");
-        return;
-    }
+        if (!startDate || !endDate) {
+            toast.error("Please select a start and end date.");
+            return;
+        }
+
+        const hasValidRequirements = scheduleRequirements.length > 0 &&
+            scheduleRequirements.some(req => req.daysOfWeek.length > 0 && req.requiredRole && req.requiredCount > 0);
+        const hasMinStaffing = minStaffingRules.length > 0 &&
+            minStaffingRules.some(rule => rule.role && rule.count > 0);
+
+        if (!hasValidRequirements && !hasMinStaffing) {
+            toast.error("Please define staffing needs or minimum staffing rules.");
+            return;
+        }
+
+        if (scheduleStaffList.length === 0) {
+            toast.error("Please add staff to include in the schedule.");
+            return;
+        }
 
         setLoadingGeneration(true);
         const tid = toast.loading("Generating schedule...");
+
         try {
-           const validRequirements = scheduleRequirements.filter(req => req.daysOfWeek.length > 0 && req.requiredRole && req.requiredCount > 0);
-        const validMinStaffing = minStaffingRules.filter(r => r.role && r.count > 0);
+            const validRequirements = scheduleRequirements.filter(req =>
+                req.daysOfWeek.length > 0 && req.requiredRole && req.requiredCount > 0
+            );
+            const validMinStaffing = minStaffingRules.filter(r => r.role && r.count > 0);
 
-const employeesForGeneration = scheduleStaffList.map(staff => {
-            // This now correctly maps our unified state to the format the Edge Function needs
-            return {
-                id: staff.id,
-                name: staff.name,
-                role: staff.role,
-                minstaAntalTimmar: staff.minstaAntalTimmar || 0, // Ensure it's not null/undefined
-                anstallningstyp: staff.anstallningstyp || 'Timmar', // Ensure a default
-                constraints: {
-                    maxConsecutiveDays: staff.maxConsecutiveDays,
-                },
+            const employeesForGeneration = scheduleStaffList.map(staff => {
+                return {
+                    id: staff.id,
+                    name: staff.name,
+                    role: staff.role,
+                    minstaAntalTimmar: staff.minstaAntalTimmar || 0,
+                    anstallningstyp: staff.anstallningstyp,
+                    constraints: {
+                        maxConsecutiveDays: staff.maxConsecutiveDays,
+                        unavailableDates: staff.unavailableDates,
+                    },
+                };
+            });
+
+            const payload = {
+                startDate,
+                endDate,
+                pharmacyHours,
+                requirements: validRequirements,
+                employees: employeesForGeneration,
+                rules: {
+                    defaultLunchMinutes,
+                    minStaffing: validMinStaffing
+                }
             };
-        });
-           
 
-           const payload = {
-            startDate,
-            endDate,
-            pharmacyHours,
-            requirements: validRequirements,
-            employees: employeesForGeneration, // Use the new list here
-            rules: { defaultLunchMinutes, minStaffing: validMinStaffing }
-        };
-            const { data, error: functionError } = await supabase.functions.invoke('generate-schedule', { body: payload });
+            const { data, error: functionError } = await supabase.functions.invoke('generate-schedule', {
+                body: payload
+            });
 
             if (functionError) {
                 let errMsg = functionError.message || "Failed to invoke schedule generation.";
-                if (functionError.context?.error?.message) errMsg = `Function error: ${functionError.context.error.message}`;
-                else if (typeof functionError.context === 'string') errMsg = `Function context error: ${functionError.context}`;
+                if (functionError.context?.error?.message) {
+                    errMsg = `Function error: ${functionError.context.error.message}`;
+                } else if (typeof functionError.context === 'string') {
+                    errMsg = `Function context error: ${functionError.context}`;
+                }
                 throw new Error(errMsg);
             }
-            if (data?.error) { throw new Error(data.error); }
-            if (!data?.schedule) { throw new Error("Generation did not return valid schedule data."); }
+
+            if (data?.error) {
+                throw new Error(data.error);
+            }
+
+            if (!data?.schedule) {
+                throw new Error("Generation did not return valid schedule data.");
+            }
 
             const scheduleWithClientIdsAndNames: GeneratedShift[] = (data.schedule || []).map((shift: Omit<GeneratedShift, 'id' | 'assigned_employee_name' | 'is_manually_added'>) => ({
-    ...shift,
-    id: crypto.randomUUID(),
-    // Use the role's display name for a cleaner title
-    title: ROLE_DISPLAY_MAP[shift.required_role as UserRole] || shift.required_role,
-    assigned_employee_name: shift.assigned_employee_id ? scheduleStaffList.find(s => s.id === shift.assigned_employee_id)?.name || 'Unknown Staff' : undefined,
-    is_manually_added: false,
-    lunch: shift.lunch_duration_minutes ? `PT${shift.lunch_duration_minutes}M` : null,
-}));
+                ...shift,
+                id: crypto.randomUUID(),
+                title: ROLE_DISPLAY_MAP[shift.required_role as UserRole] || shift.required_role,
+                assigned_employee_name: shift.assigned_employee_id
+                    ? scheduleStaffList.find(s => s.id === shift.assigned_employee_id)?.name || 'Unknown Staff'
+                    : undefined,
+                is_manually_added: false,
+                lunch: shift.lunch_duration_minutes ? `PT${shift.lunch_duration_minutes}M` : null,
+            }));
 
             setGeneratedSchedule(scheduleWithClientIdsAndNames);
             setDisplaySchedule(scheduleWithClientIdsAndNames);
             setWarnings(data.warnings || []);
-            toast.success(`Schedule generated ${data.warnings?.length ? 'with warnings' : 'successfully'}.`, { id: tid, duration: 4000 });
-           if (data.warnings?.length) {
-    data.warnings.forEach((w: string) => toast(w, {
-        duration: 6000,
-        icon: '⚠️', // This adds the warning icon
-    }));
-}
+
+            if (data.stats) {
+                setScheduleStats(data.stats);
+            }
+
+            toast.success(`Schedule generated ${data.warnings?.length ? 'with warnings' : 'successfully'}.`, {
+                id: tid,
+                duration: 4000
+            });
+
+            if (data.warnings?.length) {
+                data.warnings.forEach((w: string) => toast(w, {
+                    duration: 6000,
+                    icon: '⚠️',
+                }));
+            }
+
         } catch (err) {
             console.error("Error in handleGenerateSchedule:", err);
             const message = err instanceof Error ? err.message : "Failed to generate schedule.";
-            setError(message); toast.error(message, { id: tid, duration: 5000 });
-            setGeneratedSchedule(null); setDisplaySchedule(null);
+            setError(message);
+            toast.error(message, { id: tid, duration: 5000 });
+            setGeneratedSchedule(null);
+            setDisplaySchedule(null);
         } finally {
             setLoadingGeneration(false);
         }
-    }, [startDate, endDate, pharmacyHours, scheduleRequirements, scheduleStaffList, manualStaffList, defaultLunchMinutes, minStaffingRules]);
+    }, [
+        startDate,
+        endDate,
+        pharmacyHours,
+        scheduleRequirements,
+        scheduleStaffList,
+        defaultLunchMinutes,
+        minStaffingRules
+    ]);
 
     const handleReassignEmployee = (shiftId: string, newEmployeeId: string | null) => {
         setDisplaySchedule(prevSchedule => {
             if (!prevSchedule) return null;
-           const newEmployee = newEmployeeId ? scheduleStaffList.find(emp => emp.id === newEmployeeId) : null;
+            const newEmployee = newEmployeeId ? scheduleStaffList.find(emp => emp.id === newEmployeeId) : null;
             const originalShift = prevSchedule.find(s => s.id === shiftId);
             if (!originalShift) return prevSchedule;
 
-           if (newEmployee && newEmployee.role !== originalShift.required_role) {
-    toast.error(`Cannot assign ${newEmployee.name}. Role mismatch.`);
-                setEditingShiftId(null); return prevSchedule;
+            if (newEmployee && newEmployee.role !== originalShift.required_role) {
+                toast.error(`Cannot assign ${newEmployee.name}. Role mismatch.`);
+                setEditingShiftId(null);
+                return prevSchedule;
             }
+
             return prevSchedule.map(shift => {
                 if (shift.id === shiftId) {
                     const updatedNotes = `${shift.notes?.replace('(Manually reassigned)', '').trim() || ''} ${newEmployeeId ? '(Manually reassigned)' : ''}`.trim();
                     return {
-                        ...shift, assigned_employee_id: newEmployeeId,
+                        ...shift,
+                        assigned_employee_id: newEmployeeId,
                         assigned_employee_name: newEmployee ? newEmployee.name : undefined,
-                        is_unfilled: !newEmployeeId, notes: updatedNotes, is_manually_added: true,
+                        is_unfilled: !newEmployeeId,
+                        notes: updatedNotes,
+                        is_manually_added: true,
                     };
                 }
                 return shift;
             });
         });
         setEditingShiftId(null);
-        setShiftToEdit(null); // Close modal after reassigning
+        setShiftToEdit(null);
         toast.success("Assignment updated locally. Save changes to persist.");
     };
 
-  const handleLoadSchedule = useCallback(async (scheduleToLoad: ScheduleRecord) => {
-    if (!profile?.id || !scheduleToLoad.id) return;
-    const tid = toast.loading(`Loading schedule "${scheduleToLoad.schedule_name}"...`);
-    setError(null); setWarnings([]);
+    const handleLoadSchedule = useCallback(async (scheduleToLoad: ScheduleRecord) => {
+        if (!profile?.id || !scheduleToLoad.id) return;
+        const tid = toast.loading(`Loading schedule "${scheduleToLoad.schedule_name}"...`);
+        setError(null);
+        setWarnings([]);
 
-    try {
-        const { data: shiftsData, error: shiftsError } = await supabase.from('schedule_shifts').select('*')
-            .eq('schedule_id', scheduleToLoad.id).eq('employer_id', profile.id)
-            .order('shift_date', { ascending: true }).order('start_time', { ascending: true });
-            
-        if (shiftsError) throw shiftsError;
-        if (!shiftsData) throw new Error("No shifts found for this schedule.");
+        try {
+            const { data: shiftsData, error: shiftsError } = await supabase
+                .from('schedule_shifts')
+                .select('*')
+                .eq('schedule_id', scheduleToLoad.id)
+                .eq('employer_id', profile.id)
+                .order('shift_date', { ascending: true })
+                .order('start_time', { ascending: true });
 
-        const loadedDisplayShifts: GeneratedShift[] = shiftsData.map((sShift: ScheduleShiftRecord) => {
-            // *** CORRECTION 1: Check both profile_id and staff_id to get the correct assigned ID ***
-            const assignedId = sShift.assigned_profile_id || sShift.assigned_staff_id;
-            let staffName = sShift.assigned_staff_name;
+            if (shiftsError) throw shiftsError;
+            if (!shiftsData) throw new Error("No shifts found for this schedule.");
 
-            // *** CORRECTION 2: Use the unified scheduleStaffList for a more reliable name lookup ***
-            if (assignedId && !staffName) {
-                const staffMember = scheduleStaffList.find(s => s.id === assignedId);
-                staffName = staffMember?.name || 'Unknown Staff';
-            }
+            const loadedDisplayShifts: GeneratedShift[] = shiftsData.map((sShift: ScheduleShiftRecord) => {
+                const assignedId = sShift.assigned_profile_id || sShift.assigned_staff_id;
+                let staffName = sShift.assigned_staff_name;
 
-            return {
-                id: sShift.id,
-                date: sShift.shift_date,
-                start_time: sShift.start_time,
-                end_time: sShift.end_time,
-                required_role: sShift.required_role as UserRole,
-                employer_id: sShift.employer_id,
-                title: ROLE_DISPLAY_MAP[sShift.required_role as UserRole] || sShift.required_role,
-                description: sShift.notes || `Loaded: ${scheduleToLoad.schedule_name}`,
-                location: profile?.default_location || null,
-                status: sShift.is_unfilled ? 'open' : 'filled',
-                assigned_employee_id: assignedId, // Use the correctly identified ID
-                assigned_employee_name: staffName,
-                is_unfilled: sShift.is_unfilled, // This value from the DB is now respected
-                is_manually_added: true,
-                notes: sShift.notes,
-                published_shift_need_id: sShift.published_shift_need_id,
-            };
-        });
-        
-        setScheduleName(scheduleToLoad.schedule_name);
-        setStartDate(scheduleToLoad.period_start_date && isValid(parseISO(scheduleToLoad.period_start_date)) ? format(parseISO(scheduleToLoad.period_start_date), 'yyyy-MM-dd') : '');
-        setEndDate(scheduleToLoad.period_end_date && isValid(parseISO(scheduleToLoad.period_end_date)) ? format(parseISO(scheduleToLoad.period_end_date), 'yyyy-MM-dd') : '');
-        setSavedScheduleId(scheduleToLoad.id);
-        setDisplaySchedule(loadedDisplayShifts);
-        setGeneratedSchedule(loadedDisplayShifts);
-        setShowLoadScheduleModal(false);
-        toast.success(`Schedule "${scheduleToLoad.schedule_name}" loaded.`, { id: tid });
+                if (assignedId && !staffName) {
+                    // Look in the currently constructed scheduleStaffList
+                    const staffMember = scheduleStaffList.find(s => s.id === assignedId);
+                    staffName = staffMember?.name || 'Unknown Staff';
+                }
 
-    } catch (err) {
-        console.error("Error loading schedule:", err);
-        const message = err instanceof Error ? err.message : "Failed to load schedule.";
-        toast.error(message, { id: tid });
-        setError(message);
-    }
-}, [profile?.id, profile?.default_location, scheduleStaffList]);
+                return {
+                    id: sShift.id,
+                    date: sShift.shift_date,
+                    start_time: sShift.start_time,
+                    end_time: sShift.end_time,
+                    required_role: sShift.required_role as UserRole,
+                    employer_id: sShift.employer_id,
+                    title: ROLE_DISPLAY_MAP[sShift.required_role as UserRole] || sShift.required_role,
+                    description: sShift.notes || `Loaded: ${scheduleToLoad.schedule_name}`,
+                    location: profile?.default_location || null,
+                    status: sShift.is_unfilled ? 'open' : 'filled',
+                    assigned_employee_id: assignedId,
+                    assigned_employee_name: staffName,
+                    is_unfilled: sShift.is_unfilled,
+                    is_manually_added: true,
+                    notes: sShift.notes,
+                    published_shift_need_id: sShift.published_shift_need_id,
+                    lunch_duration_minutes: null, // This info is not stored in the db per shift currently
+                };
+            });
+
+            setScheduleName(scheduleToLoad.schedule_name);
+            setStartDate(scheduleToLoad.period_start_date && isValid(parseISO(scheduleToLoad.period_start_date)) ? format(parseISO(scheduleToLoad.period_start_date), 'yyyy-MM-dd') : '');
+            setEndDate(scheduleToLoad.period_end_date && isValid(parseISO(scheduleToLoad.period_end_date)) ? format(parseISO(scheduleToLoad.period_end_date), 'yyyy-MM-dd') : '');
+            setSavedScheduleId(scheduleToLoad.id);
+            setDisplaySchedule(loadedDisplayShifts);
+            setGeneratedSchedule(loadedDisplayShifts);
+            setShowLoadScheduleModal(false);
+            setScheduleStats(null); // Stats are not saved, clear them when loading.
+            toast.success(`Schedule "${scheduleToLoad.schedule_name}" loaded.`, { id: tid });
+
+        } catch (err) {
+            console.error("Error loading schedule:", err);
+            const message = err instanceof Error ? err.message : "Failed to load schedule.";
+            toast.error(message, { id: tid });
+            setError(message);
+        }
+    }, [profile?.id, profile?.default_location, scheduleStaffList]);
+
+
+
+
+  
   
 const handleSaveChanges = useCallback(async (processAssignments = false) => {
     const currentDisplaySchedule = displaySchedule;
@@ -626,7 +796,13 @@ const handleSaveChanges = useCallback(async (processAssignments = false) => {
                 assigned_staff_name: shiftData.assigned_employee_name,
                 is_unfilled: !shiftData.assigned_employee_id,
                 notes: shiftData.notes,
-                assigned_profile_id: (assignedStaffMember && !assignedStaffMember.isManual) ? assignedStaffMember.id : null,
+
+              // --- FIX IS HERE ---
+        // If the staff member is NOT manual, assign their ID to 'assigned_profile_id'
+        assigned_profile_id: (assignedStaffMember && !assignedStaffMember.isManual) ? assignedStaffMember.id : null,
+        // If the staff member IS manual, assign their ID to 'assigned_staff_id'
+        assigned_staff_id: (assignedStaffMember && assignedStaffMember.isManual) ? assignedStaffMember.id : null,
+        // --- END FIX ---
                 published_shift_need_id: shiftData.published_shift_need_id,
             };
         });
@@ -1323,6 +1499,54 @@ const handleSaveChanges = useCallback(async (processAssignments = false) => {
                                 className="form-input p-1 text-xs w-full"
                             />
                         </div>
+                      <div className="mt-3 pt-3 border-t">
+    <label className="block text-xs font-medium text-gray-600 mb-2">Otillgängliga Datum</label>
+    <div className="space-y-2">
+        {staff.unavailableDates.length > 0 ? (
+            <div className="flex flex-wrap gap-1">
+                {staff.unavailableDates.map(date => (
+                    <span key={date} className="flex items-center bg-gray-200 text-gray-700 text-xs font-medium px-2 py-1 rounded-full">
+                        {date}
+                        <button
+                            onClick={() => handleRemoveUnavailableDate(staff.id, date)}
+                            className="ml-1.5 text-gray-500 hover:text-red-600"
+                            title="Ta bort datum"
+                        >
+                            <X size={12} />
+                        </button>
+                    </span>
+                ))}
+            </div>
+        ) : (
+            <p className="text-xs text-gray-400 italic">Inga datum angivna.</p>
+        )}
+    </div>
+    <div className="flex items-center gap-2 mt-2">
+        <input
+        type="date"
+        className="form-input p-1 text-xs w-full"
+        // Connect the value to the tempDates state for this staff member
+        value={tempDates[staff.id] || ''}
+        // Update the state when the input changes
+        onChange={(e) => setTempDates(prev => ({ ...prev, [staff.id]: e.target.value }))}
+    />
+    <button
+           type="button"
+        // This is the fully implemented onClick logic
+        onClick={() => {
+            const dateToAdd = tempDates[staff.id];
+            if (dateToAdd) {
+                handleAddUnavailableDate(staff.id, dateToAdd);
+            } else {
+                toast.error("Välj ett datum först.");
+            }
+        }}
+        className="btn btn-secondary btn-xs flex-shrink-0"
+    >
+        Lägg till
+    </button>
+</div>
+</div>
                         <div>
                             <label className="block font-medium text-gray-600 mb-1">Anställningstyp</label>
                             <select
@@ -1332,7 +1556,7 @@ const handleSaveChanges = useCallback(async (processAssignments = false) => {
                             >
                                 <option value="Heltid">Heltid</option>
                                 <option value="Deltid">Deltid</option>
-                                <option value="Timmar">Timmar</option>
+                                <option value="Timanställd">Timanställd</option>
                             </select>
                         </div>
                     </div>
@@ -1413,6 +1637,17 @@ const handleSaveChanges = useCallback(async (processAssignments = false) => {
                             <InfoTooltip text="Sparar schemat OCH skapar/uppdaterar arbetspass för alla tilldelade anställda. Detta gör passen synliga för dem i deras personliga scheman." />
                         </div>
                                 {savedScheduleId && ( <button onClick={handlePublishUnfilled} className="btn btn-indigo btn-sm" disabled={publishingShifts || displaySchedule.filter(s => s.is_unfilled && !s.published_shift_need_id).length === 0}> {publishingShifts ? <Loader2 className="animate-spin h-4 w-4 mr-1"/> : <UploadCloud size={16} className="mr-1"/>} {publishingShifts ? 'Publicerar...' : `Publicera ${displaySchedule.filter(s => s.is_unfilled && !s.published_shift_need_id).length} Obemannade`} </button> )}
+
+                              {scheduleStats && (
+    <button
+        onClick={() => setShowStatsModal(true)}
+        className="btn btn-secondary btn-sm"
+        title="Visa statistik för schemat"
+    >
+        <BarChart2 size={16} className="mr-1"/>
+        Statistik
+    </button>
+)}
                             </div>
                         </div>
                         <div className="p-0 sm:p-4 print:p-0">
@@ -1494,6 +1729,61 @@ const handleSaveChanges = useCallback(async (processAssignments = false) => {
                     </div>
                 )}
             </div>
+
+          {showStatsModal && scheduleStats && (
+    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+        <div className="bg-white rounded-lg shadow-xl p-6 w-full max-w-2xl max-h-[80vh] flex flex-col">
+            <div className="flex justify-between items-center border-b pb-3 mb-4">
+                <h3 className="text-xl font-semibold text-gray-800">Schemastatistik</h3>
+                <button onClick={() => setShowStatsModal(false)} className="text-gray-500 hover:text-gray-700 p-1 rounded-full">
+                    <X size={20} />
+                </button>
+            </div>
+            <div className="overflow-y-auto flex-grow space-y-4 pr-2">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-center">
+                    <div className="bg-gray-100 p-4 rounded-lg">
+                        <p className="text-sm text-gray-600">Totalt Antal Pass</p>
+                        <p className="text-3xl font-bold text-gray-800">{scheduleStats.totalShifts}</p>
+                    </div>
+                    <div className="bg-red-50 border border-red-200 p-4 rounded-lg">
+                        <p className="text-sm text-red-700">Obemannade Pass</p>
+                        <p className="text-3xl font-bold text-red-800">{scheduleStats.unfilledShifts}</p>
+                    </div>
+                </div>
+                <div>
+                    <h4 className="font-semibold mb-3 text-gray-700">Personalanvändning</h4>
+                    <div className="space-y-3">
+                        {Object.entries(scheduleStats.employeeUtilization).map(([name, stats]) => {
+                            const utilizationPercentage = stats.targetHours > 0 ? (stats.assignedHours / stats.targetHours) * 100 : 0;
+                            return (
+                                <div key={name} className="p-3 border rounded-md bg-white">
+                                    <div className="flex justify-between items-center font-medium mb-1.5">
+                                        <span>{name}</span>
+                                        <span className="text-sm text-gray-500">{stats.shiftsCount} pass</span>
+                                    </div>
+                                    <div className="w-full bg-gray-200 rounded-full h-3">
+                                        <div
+                                            className="bg-blue-600 h-3 rounded-full transition-all duration-500"
+                                            style={{ width: `${Math.min(100, utilizationPercentage)}%` }}
+                                        ></div>
+                                    </div>
+                                    <div className="text-xs text-right text-gray-600 mt-1">
+                                        {stats.assignedHours.toFixed(1)} / {stats.targetHours.toFixed(1)} timmar ({utilizationPercentage.toFixed(0)}%)
+                                    </div>
+                                </div>
+                            );
+                        })}
+                    </div>
+                </div>
+            </div>
+             <div className="border-t pt-4 mt-4 text-right">
+                 <button onClick={() => setShowStatsModal(false)} className="btn btn-secondary">
+                     Stäng
+                 </button>
+             </div>
+        </div>
+    </div>
+)}
 
             {/* Load Saved Schedule Modal */}
             {showLoadScheduleModal && (
