@@ -24,12 +24,124 @@ import { InfoTooltip } from '../UI/InfoTooltip';
 // Date-fns Imports
 import { format, parseISO, isValid } from 'date-fns';
 import { sv } from 'date-fns/locale';
+import { add, sub, startOfWeek, endOfWeek, eachDayOfInterval } from 'date-fns';
+
 
 // Modal Imports
 import { ShiftDetailsModal } from '../Shifts/ShiftDetailsModal';
 
 import jsPDF from 'jspdf';
 import html2canvas from 'html2canvas';
+
+const ShiftBlock = ({ shift, onClick }: { shift: GeneratedShift; onClick: (shift: GeneratedShift) => void }) => (
+    <div
+        className={`p-1.5 rounded-md text-xs cursor-pointer hover:shadow-lg transition-shadow ${ROLE_COLORS[shift.required_role] || 'bg-gray-100'}`}
+        onClick={() => onClick(shift)}
+        title={`Klicka för att redigera. ${shift.notes || ''}`}
+    >
+        <div className="font-bold">{formatTime(shift.start_time)} - {formatTime(shift.end_time)}</div>
+        {shift.is_unfilled && <div className="font-semibold text-red-600">OBEMANNAT</div>}
+        <div className="truncate">{shift.notes}</div>
+    </div>
+);
+
+// --- The main component for the new Weekly Employee View ---
+const WeeklyEmployeeView = ({
+    schedule,
+    staffList,
+    weekStart,
+    onShiftClick,
+    onPrevWeek,
+    onNextWeek,
+    isNextWeekDisabled
+}: {
+    schedule: GeneratedShift[];
+    staffList: ScheduleStaffMember[];
+    weekStart: Date;
+    onShiftClick: (shift: GeneratedShift) => void;
+    onPrevWeek: () => void;
+    onNextWeek: () => void;
+    isNextWeekDisabled: boolean;
+}) => {
+    const weekDays = eachDayOfInterval({ start: weekStart, end: endOfWeek(weekStart, { weekStartsOn: 1 }) });
+
+    const staffByRole = useMemo(() => {
+        const grouped: Record<string, ScheduleStaffMember[]> = {
+            'Farmaceut': [],
+            'Egenvårdsrådgivare': [],
+            'Kassapersonal': [], // Using a more general term
+        };
+        staffList.forEach(staff => {
+            const roleKey = ROLE_DISPLAY_MAP[staff.role] === 'Säljare' ? 'Kassapersonal' : ROLE_DISPLAY_MAP[staff.role];
+            if (grouped[roleKey]) {
+                grouped[roleKey].push(staff);
+            }
+        });
+        return grouped;
+    }, [staffList]);
+
+    return (
+        <div className="overflow-x-auto">
+            <div className="flex justify-between items-center mb-4">
+                <button onClick={onPrevWeek} className="btn btn-secondary btn-sm"><ChevronLeft size={16} className="mr-1" /> Föregående vecka</button>
+                <h3 className="text-lg font-semibold text-gray-700">
+                    Vecka {format(weekStart, 'w', { locale: sv })} ({format(weekStart, 'd MMM', { locale: sv })} - {format(endOfWeek(weekStart, { weekStartsOn: 1 }), 'd MMM yyyy', { locale: sv })})
+                </h3>
+                <button onClick={onNextWeek} disabled={isNextWeekDisabled} className="btn btn-secondary btn-sm">Nästa vecka <ChevronRight size={16} className="ml-1" /></button>
+            </div>
+            <table className="w-full border-collapse">
+                <thead>
+                    <tr className="bg-gray-100">
+                        <th className="sticky left-0 bg-gray-100 z-10 p-2 text-left text-sm font-semibold text-gray-600 border w-[200px]">Anställd</th>
+                        {weekDays.map(day => (
+                            <th key={day.toISOString()} className="p-2 text-sm font-semibold text-gray-600 border">
+                                {format(day, 'eee d', { locale: sv })}
+                            </th>
+                        ))}
+                    </tr>
+                </thead>
+                <tbody>
+                    {Object.entries(staffByRole).map(([role, staffMembers]) => (
+                        staffMembers.length > 0 && (
+                            <React.Fragment key={role}>
+                                <tr>
+                                    <td colSpan={8} className="bg-gray-200 p-1.5 text-sm font-bold text-gray-800 sticky left-0 z-10">{role}</td>
+                                </tr>
+                                {staffMembers.map(staff => {
+                                    const shiftsByDay = schedule.filter(s => s.assigned_employee_id === staff.id).reduce((acc, shift) => {
+                                        const dayKey = format(parseISO(shift.date), 'yyyy-MM-dd');
+                                        if (!acc[dayKey]) acc[dayKey] = [];
+                                        acc[dayKey].push(shift);
+                                        return acc;
+                                    }, {} as Record<string, GeneratedShift[]>);
+
+                                    return (
+                                        <tr key={staff.id} className="bg-white hover:bg-gray-50">
+                                            <td className="sticky left-0 bg-white hover:bg-gray-50 z-10 p-2 text-sm font-medium text-gray-800 border-b border-r w-[200px]">{staff.name}</td>
+                                            {weekDays.map(day => {
+                                                const dayKey = format(day, 'yyyy-MM-dd');
+                                                const dayShifts = shiftsByDay[dayKey] || [];
+                                                return (
+                                                    <td key={day.toISOString()} className="p-1 border-b align-top h-24">
+                                                        <div className="space-y-1">
+                                                            {dayShifts.map(shift => (
+                                                                <ShiftBlock key={shift.id} shift={shift} onClick={onShiftClick} />
+                                                            ))}
+                                                        </div>
+                                                    </td>
+                                                );
+                                            })}
+                                        </tr>
+                                    );
+                                })}
+                            </React.Fragment>
+                        )
+                    ))}
+                </tbody>
+            </table>
+        </div>
+    );
+};
 
 // Helper function to get a random color for styling
 const getColor = (str: string) => {
@@ -53,6 +165,7 @@ interface ScheduleRequirement {
     requiredRole: UserRole | '';
     requiredCount: number;
     includeLunch: boolean;
+  fillType: 'full_day' | 'exact_time';
 }
 
 type ManualStaffMember = Database['public']['Tables']['employer_manual_staff']['Row'] & { unavailable_dates?: string[] };
@@ -132,6 +245,11 @@ const ROLE_DISPLAY_MAP: Record<UserRole, string> = {
     säljare: 'Säljare',
     egenvårdsrådgivare: 'Egenvårdsrådgivare'
 };
+const ROLE_COLORS: Record<UserRole, string> = {
+    pharmacist: 'bg-blue-100 text-blue-800 border-blue-300',
+    säljare: 'bg-green-100 text-green-800 border-green-300',
+    egenvårdsrådgivare: 'bg-yellow-100 text-yellow-800 border-yellow-300',
+};
 
 function formatTime(timeString: string | null | undefined): string {
     if (!timeString) return 'N/A';
@@ -149,6 +267,7 @@ export function ScheduleGenerator() {
     const [newStaffName, setNewStaffName] = useState('');
     const [newStaffRole, setNewStaffRole] = useState<UserRole | ''>('');
     const [scheduleRequirements, setScheduleRequirements] = useState<ScheduleRequirement[]>([]);
+  const [currentWeekStart, setCurrentWeekStart] = useState<Date | null>(null);
 
     // Holds employees fetched from your DB (employer_employee_relationship)
     const [employedStaffList, setEmployedStaffList] = useState<EmployedStaffProfile[]>([]);
@@ -185,7 +304,11 @@ export function ScheduleGenerator() {
     const [publishingShifts, setPublishingShifts] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [warnings, setWarnings] = useState<string[]>([]);
-    const [scheduleView, setScheduleView] = useState<'list' | 'calendar'>('list');
+   const [fairnessWarnings, setFairnessWarnings] = useState<string[]>([]);
+    const [preGenerationWarnings, setPreGenerationWarnings] = useState<string[]>([]);
+    const [coverageStatus, setCoverageStatus] = useState<Record<string, 'ok' | 'understaffed' | 'overstaffed'>>({});
+    
+    const [scheduleView, setScheduleView] = useState<'week' | 'list' | 'calendar'>('week');
     const calendarRef = useRef<HTMLDivElement>(null);
     const calendarInstanceRef = useRef<Calendar | null>(null);
     const [scheduleName, setScheduleName] = useState('');
@@ -316,6 +439,25 @@ export function ScheduleGenerator() {
         // This should only run once after the initial data fetch.
     }, [employedStaffList, manualStaffList]);
 
+  useEffect(() => {
+    if (startDate && isValid(parseISO(startDate))) {
+        setCurrentWeekStart(startOfWeek(parseISO(startDate), { weekStartsOn: 1 }));
+    }
+}, [startDate]);
+
+// --- Add these navigation handlers ---
+const handleNextWeek = () => {
+    if (currentWeekStart) {
+        setCurrentWeekStart(add(currentWeekStart, { weeks: 1 }));
+    }
+};
+
+const handlePrevWeek = () => {
+    if (currentWeekStart) {
+        setCurrentWeekStart(sub(currentWeekStart, { weeks: 1 }));
+    }
+};
+
 
     const handleAddStaffMember = useCallback(async (e: React.FormEvent) => {
         e.preventDefault();
@@ -384,11 +526,12 @@ export function ScheduleGenerator() {
         }
     }, []);
 
-    const handleStaffConstraintChange = useCallback((
+    const handleStaffConstraintChange = useCallback(async (
         staffId: string,
         field: keyof Omit<ScheduleStaffMember, 'id' | 'name' | 'role' | 'isManual' | 'unavailableDates'>,
         value: any
     ) => {
+        // Update local state immediately
         setScheduleStaffList(prev =>
             prev.map(staff => {
                 if (staff.id === staffId) {
@@ -401,48 +544,121 @@ export function ScheduleGenerator() {
                 return staff;
             })
         );
-    }, []);
+
+        // Persist changes for manual staff
+        const staff = scheduleStaffList.find(s => s.id === staffId);
+        if (staff?.isManual) {
+            try {
+                let processedValue = value;
+                if (field === 'minstaAntalTimmar' || field === 'maxConsecutiveDays') {
+                    processedValue = value === '' ? null : (parseInt(value, 10) || null);
+                }
+
+                const updateData: any = {};
+                if (field === 'minstaAntalTimmar') updateData.target_hours = processedValue;
+                if (field === 'maxConsecutiveDays') updateData.max_consecutive_days = processedValue;
+                if (field === 'anstallningstyp') updateData.employment_type = processedValue;
+
+                const { error } = await supabase
+                    .from('employer_manual_staff')
+                    .update(updateData)
+                    .eq('id', staffId);
+
+                if (error) throw error;
+            } catch (err) {
+                console.error('Error updating manual staff:', err);
+                toast.error('Kunde inte spara ändringen');
+            }
+        }
+    }, [scheduleStaffList]);
 
     // NOTE: For now, unavailability is only managed in local state.
     // To persist it, you'd save it to the `employer_manual_staff` table for manual staff,
     // or a new dedicated table for employed staff.
-    const handleAddUnavailableDate = useCallback((staffId: string, date: string) => {
+    const handleAddUnavailableDate = useCallback(async (staffId: string, date: string) => {
     if (!date) {
         toast.error("Välj ett datum att lägga till.");
         return;
     }
-    
-    setScheduleStaffList(prevList => 
-        prevList.map(staff => {
-            if (staff.id === staffId) {
-                if (staff.unavailableDates.includes(date)) {
-                    toast.error("Detta datum är redan markerat som otillgängligt.");
-                    return staff; // Return unmodified staff member
-                }
-                const updatedDates = [...staff.unavailableDates, date].sort();
-                toast.success(`Lade till ${date} för ${staff.name}.`);
-                return { ...staff, unavailableDates: updatedDates };
-            }
-            return staff;
-        })
+
+    const staff = scheduleStaffList.find(s => s.id === staffId);
+    if (!staff) return;
+
+    if (staff.unavailableDates.includes(date)) {
+        toast.error("Detta datum är redan markerat som otillgängligt.");
+        return;
+    }
+
+    const updatedDates = [...staff.unavailableDates, date].sort();
+
+    // Update local state
+    setScheduleStaffList(prevList =>
+        prevList.map(s =>
+            s.id === staffId ? { ...s, unavailableDates: updatedDates } : s
+        )
     );
 
-    // Clear the input for this specific staff member after adding
+    // Persist for manual staff
+    if (staff.isManual) {
+        try {
+            const { error } = await supabase
+                .from('employer_manual_staff')
+                .update({ unavailable_dates: updatedDates })
+                .eq('id', staffId);
+
+            if (error) throw error;
+            toast.success(`Lade till ${date} för ${staff.name}.`);
+        } catch (err) {
+            console.error('Error updating unavailable dates:', err);
+            toast.error('Kunde inte spara datumet');
+            // Revert local state
+            setScheduleStaffList(prevList =>
+                prevList.map(s => s.id === staffId ? staff : s)
+            );
+        }
+    } else {
+        toast.success(`Lade till ${date} för ${staff.name} (endast för detta schema).`);
+    }
+
+    // Clear the input
     setTempDates(prev => ({ ...prev, [staffId]: '' }));
-}, []);
+}, [scheduleStaffList]);
 
-const handleRemoveUnavailableDate = useCallback((staffId: string, dateToRemove: string) => {
-    setScheduleStaffList(prevList => 
-        prevList.map(staff => {
-            if (staff.id === staffId) {
-                const updatedDates = staff.unavailableDates.filter(d => d !== dateToRemove);
-                return { ...staff, unavailableDates: updatedDates };
-            }
-            return staff;
-        })
+const handleRemoveUnavailableDate = useCallback(async (staffId: string, dateToRemove: string) => {
+    const staff = scheduleStaffList.find(s => s.id === staffId);
+    if (!staff) return;
+
+    const updatedDates = staff.unavailableDates.filter(d => d !== dateToRemove);
+
+    // Update local state
+    setScheduleStaffList(prevList =>
+        prevList.map(s =>
+            s.id === staffId ? { ...s, unavailableDates: updatedDates } : s
+        )
     );
-    toast.success(`Tog bort datum för otillgänglighet.`);
-}, []);
+
+    // Persist for manual staff
+    if (staff.isManual) {
+        try {
+            const { error } = await supabase
+                .from('employer_manual_staff')
+                .update({ unavailable_dates: updatedDates })
+                .eq('id', staffId);
+
+            if (error) throw error;
+            toast.success(`Tog bort datum för otillgänglighet.`);
+        } catch (err) {
+            console.error('Error removing unavailable date:', err);
+            toast.error('Kunde inte ta bort datumet');
+            // Revert local state
+            setScheduleStaffList(prevList =>
+                prevList.map(s => s.id === staffId ? staff : s)
+            );
+        }
+    } else {
+        toast.success(`Tog bort datum för otillgänglighet (endast för detta schema).`);
+    }
+}, [scheduleStaffList]);
 
 
     const handleAddRequirement = () => setScheduleRequirements(prev => [...prev, {
@@ -452,7 +668,8 @@ const handleRemoveUnavailableDate = useCallback((staffId: string, dateToRemove: 
         endTime: '17:00',
         requiredRole: '',
         requiredCount: 1,
-        includeLunch: true
+        includeLunch: true,
+      fillType: 'full_day'
     }]);
 
     const handleRequirementChange = (id: string, field: keyof ScheduleRequirement | 'dayOfWeekToggle', value: any) => {
@@ -476,6 +693,55 @@ const handleRemoveUnavailableDate = useCallback((staffId: string, dateToRemove: 
     };
 
     const handleRemoveRequirement = (id: string) => setScheduleRequirements(prev => prev.filter(req => req.id !== id));
+
+  useEffect(() => {
+    const newWarnings: string[] = [];
+    const newCoverage: Record<string, 'ok' | 'understaffed' | 'overstaffed'> = {};
+
+    if (scheduleRequirements.length === 0 && minStaffingRules.length === 0) {
+        setPreGenerationWarnings([]);
+        setCoverageStatus({});
+        return;
+    }
+
+    const staffByRole: Record<UserRole, number> = {
+        pharmacist: 0,
+        säljare: 0,
+        egenvårdsrådgivare: 0,
+    };
+    scheduleStaffList.forEach(staff => {
+        if (staff.role) {
+            staffByRole[staff.role]++;
+        }
+    });
+
+    ALL_ROLES.forEach(role => {
+        const requiredCount = Math.max(
+            ...scheduleRequirements
+                .filter(req => req.requiredRole === role)
+                .map(req => req.requiredCount),
+            minStaffingRules
+                .filter(rule => rule.role === role)
+                .map(rule => rule.count),
+            0
+        );
+
+        const availableCount = staffByRole[role];
+
+        if (requiredCount > availableCount) {
+            newWarnings.push(`⚠️ You need ${requiredCount} ${ROLE_DISPLAY_MAP[role]}(s) but only have ${availableCount} available.`);
+            newCoverage[role] = 'understaffed';
+        } else if (requiredCount > 0 && availableCount > requiredCount + 1) {
+            newWarnings.push(`ℹ️ You have ${availableCount} ${ROLE_DISPLAY_MAP[role]}(s) available but only need ${requiredCount}. This may lead to unassigned staff.`);
+            newCoverage[role] = 'overstaffed';
+        } else if (requiredCount > 0) {
+            newCoverage[role] = 'ok';
+        }
+    });
+
+    setPreGenerationWarnings(newWarnings);
+    setCoverageStatus(newCoverage);
+}, [scheduleRequirements, minStaffingRules, scheduleStaffList]);
 
     const handlePharmacyHourChange = (dayIndex: number, field: 'openTime' | 'closeTime', value: string | null) => {
         setPharmacyHours(prev => prev.map((day, i) =>
@@ -501,6 +767,7 @@ const handleRemoveUnavailableDate = useCallback((staffId: string, dateToRemove: 
     const handleGenerateSchedule = useCallback(async () => {
         setError(null);
         setWarnings([]);
+      setFairnessWarnings([]);
         setGeneratedSchedule(null);
         setDisplaySchedule(null);
         setScheduleStats(null); // Clear previous stats
@@ -598,6 +865,7 @@ const handleRemoveUnavailableDate = useCallback((staffId: string, dateToRemove: 
             setGeneratedSchedule(scheduleWithClientIdsAndNames);
             setDisplaySchedule(scheduleWithClientIdsAndNames);
             setWarnings(data.warnings || []);
+          setFairnessWarnings(data.fairnessWarnings || []);
 
             if (data.stats) {
                 setScheduleStats(data.stats);
@@ -794,7 +1062,7 @@ const handleSaveChanges = useCallback(async (processAssignments = false) => {
                 end_time: shiftData.end_time,
                 required_role: shiftData.required_role,
                 assigned_staff_name: shiftData.assigned_employee_name,
-                is_unfilled: !shiftData.assigned_employee_id,
+                is_unfilled: !assignedStaffMember,
                 notes: shiftData.notes,
 
               // --- FIX IS HERE ---
@@ -1405,6 +1673,17 @@ const handleSaveChanges = useCallback(async (processAssignments = false) => {
     </select>
 </div>
                                         <div><label className="block text-xs font-medium text-gray-600">Antal</label><input type="number" min="1" value={req.requiredCount} onChange={(e) => handleRequirementChange(req.id, 'requiredCount', e.target.value)} className="form-input text-sm p-1 mt-1 w-16" /></div> 
+                                      <div>
+    <label className="block text-xs font-medium text-gray-600">Fyllningstyp</label>
+    <select 
+        value={req.fillType || 'full_day'} 
+        onChange={(e) => handleRequirementChange(req.id, 'fillType', e.target.value)} 
+        className="form-select text-sm p-1 mt-1 w-full"
+    >
+        <option value="full_day">Hela Dagen (Överlapp)</option>
+        <option value="exact_time">Endast Exakt Tid</option>
+    </select>
+</div>
                                         <div className="col-span-1 xs:col-span-2 sm:col-span-1 flex items-center pt-2 sm:justify-end"> <input type="checkbox" id={`lunch-${req.id}`} checked={req.includeLunch} onChange={(e) => handleRequirementChange(req.id, 'includeLunch', e.target.checked)} className="form-checkbox mr-2"/> <label htmlFor={`lunch-${req.id}`} className="text-xs font-medium text-gray-600">Inkludera Lunch?</label> </div> 
                                     </div> 
                                 </div> 
@@ -1578,7 +1857,41 @@ const handleSaveChanges = useCallback(async (processAssignments = false) => {
 </div>
 </div>     
  </div>
- </div>             
+ </div>            
+          { (preGenerationWarnings.length > 0 || Object.keys(coverageStatus).length > 0) && (
+    <div className="card mt-4 print:hidden">
+        <h3 className="card-header"><AlertTriangle size={18} className="mr-2 text-yellow-600"/>Live Staffing Check</h3>
+        <div className="p-4 space-y-3">
+            {preGenerationWarnings.length > 0 && (
+                 <ul className="list-disc list-inside text-sm text-gray-700">
+                    {preGenerationWarnings.map((w, i) => <li key={i}>{w}</li>)}
+                </ul>
+            )}
+          {fairnessWarnings.length > 0 && (
+    <div className="mb-4 bg-blue-50 border-l-4 border-blue-400 text-blue-800 px-4 py-3 rounded-lg shadow print:hidden" role="alert">
+        <div className="flex items-center mb-1">
+            <Users className="h-5 w-5 mr-2 text-blue-600"/>
+            <p className="font-bold">Fairness & Distribution Notes:</p>
+        </div>
+        <ul className="list-disc list-inside text-sm mt-1 pl-5">
+            {fairnessWarnings.map((w, i) => <li key={i}>{w}</li>)}
+        </ul>
+    </div>
+)}
+            <div className="flex flex-wrap gap-4 pt-2">
+                {Object.entries(coverageStatus).map(([role, status]) => (
+                    <div key={role} className="flex items-center space-x-2">
+                        <span className={`h-3 w-3 rounded-full ${status === 'ok' ? 'bg-green-500' : status === 'understaffed' ? 'bg-red-500' : 'bg-yellow-500'}`}></span>
+                        <span className="text-sm font-medium">{ROLE_DISPLAY_MAP[role as UserRole]}</span>
+                        <span className={`text-xs font-semibold ${status === 'ok' ? 'text-green-700' : status === 'understaffed' ? 'text-red-700' : 'text-yellow-700'}`}>
+                            {status === 'ok' ? 'OK' : status === 'understaffed' ? 'Understaffed' : 'Overstaffed'}
+                        </span>
+                    </div>
+                ))}
+            </div>
+        </div>
+    </div>
+)}
 
             {/* Action Buttons */}
             <div className="text-center mt-8 pt-6 border-t print:hidden flex flex-wrap justify-center gap-4">
@@ -1605,6 +1918,7 @@ const handleSaveChanges = useCallback(async (processAssignments = false) => {
                             </div>
                             <div className="flex items-center gap-2 flex-wrap">
                                 <div className="flex space-x-1 bg-gray-200 p-1 rounded-lg">
+                                   <button onClick={() => setScheduleView('week')} title="Veckovy" className={`px-3 py-1 rounded-md text-sm ${scheduleView === 'week' ? 'bg-white shadow text-blue-700' : 'text-gray-600 hover:bg-gray-50'}`}> <CalendarIconLucide size={16}/> </button>
                                     <button onClick={() => setScheduleView('list')} title="Listvy" className={`px-3 py-1 rounded-md text-sm ${scheduleView === 'list' ? 'bg-white shadow text-blue-700' : 'text-gray-600 hover:bg-gray-50'}`}> <List size={16}/> </button>
                                     <button onClick={() => setScheduleView('calendar')} title="Kalendervy" className={`px-3 py-1 rounded-md text-sm ${scheduleView === 'calendar' ? 'bg-white shadow text-blue-700' : 'text-gray-600 hover:bg-gray-50'}`}> <FullCalendarIcon size={16}/> </button>
                                 </div>
@@ -1638,20 +1952,37 @@ const handleSaveChanges = useCallback(async (processAssignments = false) => {
                         </div>
                                 {savedScheduleId && ( <button onClick={handlePublishUnfilled} className="btn btn-indigo btn-sm" disabled={publishingShifts || displaySchedule.filter(s => s.is_unfilled && !s.published_shift_need_id).length === 0}> {publishingShifts ? <Loader2 className="animate-spin h-4 w-4 mr-1"/> : <UploadCloud size={16} className="mr-1"/>} {publishingShifts ? 'Publicerar...' : `Publicera ${displaySchedule.filter(s => s.is_unfilled && !s.published_shift_need_id).length} Obemannade`} </button> )}
 
-                              {scheduleStats && (
+                    
     <button
         onClick={() => setShowStatsModal(true)}
-        className="btn btn-secondary btn-sm"
+        className="btn btn-secondary btn-sm relative"
         title="Visa statistik för schemat"
+        disabled={!scheduleStats}
     >
         <BarChart2 size={16} className="mr-1"/>
         Statistik
+        {(warnings.length + fairnessWarnings.length) > 0 && (
+            <span className="absolute -top-2 -right-2 inline-flex items-center justify-center px-2 py-1 text-xs font-bold leading-none text-red-100 bg-red-600 rounded-full">
+                {warnings.length + fairnessWarnings.length}
+            </span>
+        )}
     </button>
-)}
+
                             </div>
                         </div>
                         <div className="p-0 sm:p-4 print:p-0">
                             {displaySchedule.length === 0 && !loadingGeneration && <p className="text-center italic text-gray-500 py-4">Inga pass att visa.</p>}
+                          {scheduleView === 'week' && displaySchedule && currentWeekStart && (
+    <WeeklyEmployeeView
+        schedule={displaySchedule}
+        staffList={scheduleStaffList}
+        weekStart={currentWeekStart}
+        onShiftClick={(shift) => setShiftToEdit(shift)}
+        onPrevWeek={handlePrevWeek}
+        onNextWeek={handleNextWeek}
+        isNextWeekDisabled={!endDate || endOfWeek(currentWeekStart, { weekStartsOn: 1 }) >= parseISO(endDate)}
+    />
+)}
                             {scheduleView === 'list' && displaySchedule.length > 0 && (
                                 
                                   <div ref={listViewRef} className="space-y-6">
